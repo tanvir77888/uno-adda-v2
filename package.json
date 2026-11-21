@@ -1,0 +1,1 @@
+{"dependencies":{"ws":"^8.18.0"},"description":"UNO Adda — a free, clean-room UNO-style card game: play vs bots or in private rooms with friends. Original code and artwork; not affiliated with Mattel.","main":"server.js","name":"uno-adda-v2","private":true,"scripts":{"start":"node server.js","test":"node test/smoke.js"},"type":"commonjs","version":"1.0.0"}

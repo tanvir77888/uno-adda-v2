@@ -1,0 +1,38 @@
+feature,area,priority,original,clone,notes
+Quick match vs bots (1-3 AI),modes,must,yes,yes,Bot game runs on the same server engine; sensible AI; smoke-tested
+Create private room with code,modes,must,yes,yes,6-letter room code; host creates; 2-4 players; smoke-tested
+Join room with code,modes,must,yes,yes,Error states for bad/full/started rooms; smoke-tested
+2v2 team mode,modes,should,yes,yes,4 players; partners opposite (seats 0&2 vs 1&3); either partner emptying a hand wins the round for the team; implemented in server team scoring; not covered by the automated smoke test
+Tournaments / World Series,modes,could,yes,no,SKIP - depends on Mattel's player network; cannot be cloned
+Go Wild coin-stake mode,modes,could,yes,no,SKIP - coin staking / gambling-adjacent; user requires fully free
+108-card deck (4 colors; 0-9; skip/reverse/+2; wild; wild+4),engine,must,yes,yes,Standard composition per official rules; verified in stress test (480 rounds; 108 cards conserved)
+Match by color/number/symbol,engine,must,yes,yes,
+Skip / Reverse / Draw Two effects,engine,must,yes,yes,Reverse acts as skip in 2-player games
+Draw pile reshuffle from discard,engine,must,yes,yes,Keeps top card; shuffles the rest
+Draw 1 when stuck; may play drawn card,engine,must,yes,yes,Official rule; pass button after drawing
+Stacking +2 on +2 and +4 on +4,house rules,must,yes,yes,Tanvir pick ON; strict same-type stacking as in the app; chain total drawn by whoever cannot stack
+Wild Draw Four challenge,house rules,must,yes,yes,Tanvir pick ON; bluff caught -> +4 player draws 4; wrong challenge -> challenger draws 6
+UNO call + catch penalty,engine,must,yes,yes,Tanvir pick ON; forget to call with 1 card -> caught = draw 2; bots catch too
+7 starting cards,engine,must,yes,yes,Tanvir pick
+30-second turn timer,engine,must,yes,yes,Tanvir pick; server-enforced; timeout = draw 1 (or take pending draw) and pass; client timer bar
+All Wild mode,house rules,should,no,yes,Tanvir pick; every card playable on anything; action effects kept; lobby toggle (not in the mobile app - from the All Wild card game)
+First-card action handling,engine,should,yes,yes,Skip/reverse/+2/wild applied per official setup rules; wild+4 flipped card goes back and re-flips
+Standard scoring (numbers face; actions 20; wilds 50),scoring,must,yes,yes,Winner scores value of all other hands (2v2: opposing team hands); totals accumulate toward 500
+Home screen with mode buttons,screens,must,yes,yes,Brand: UNO Adda (own brand; no Mattel name/logo/art)
+Rules / house-rule panel,screens,should,yes,yes,Plain-language rules written fresh
+Lobby with ready states + host start,screens,must,yes,yes,House-rule toggles set by host at creation
+Game table (hand; opponents; piles; color indicator; timer),screens,must,yes,yes,Mobile-first; original CSS cards only
+Wild color picker,screens,must,yes,yes,4-color modal; also used for a flipped Wild first card
+Challenge prompt,screens,must,yes,yes,Challenge button + pending banner with the total shown
+Game-over screen with points + play again,screens,must,yes,yes,Per-hand point breakdown; host starts next round
+Text chat in lobby,comms,should,yes,yes,Simple room chat; also usable at the table
+Voice chat,comms,could,yes,no,PENDING - out of scope for this build (was missing from v1 too)
+Quick emotes / reactions,comms,could,yes,no,Not built; chat covers the need for now
+Profile / levels / XP,social,could,yes,no,SKIP for now - guest-only design; no accounts
+Daily rewards / spin wheel,economy,could,yes,no,SKIP - coin economy excluded; game is fully free
+Coins / shop / in-app purchases,economy,could,yes,no,SKIP - user requires fully free; no IAP ever
+Ads,economy,could,yes,no,SKIP - fully free means no ads either
+Clubs / gifting / friends list,social,could,yes,no,SKIP - social network cannot be cloned
+Pets / shiny cards / cosmetics,social,could,yes,no,SKIP - licensed cosmetic content
+Reconnect to a running game,engine,should,no,yes,Same name + room code rejoin restores seat while game runs (best effort); session token kept in localStorage; auto-reconnect on socket drop
+Android APK wrapper,platform,could,no,no,PENDING - web build first; APK packaging is a later step like v1
