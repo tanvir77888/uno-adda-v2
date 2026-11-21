@@ -36,6 +36,38 @@ Verification (2026-11-21):
   on/off × challenge on/off × All Wild) all finish; 108 cards conserved at
   every step.
 
-Not built (honest): voice chat (pending, as in v1), quick emotes, APK
-wrapper (later step), GitHub push (user creates the repo himself).
+Not built (honest): quick emotes, APK wrapper (later step), GitHub push
+(user creates the repo himself).
 2v2 is implemented but was not exercised by the automated smoke test.
+
+## Voice chat (added 2026-11-21, follow-up build)
+
+WebRTC peer-to-peer voice for online rooms, mesh topology (fine at 2–4
+players). The server never touches audio: `server.js` tracks an `inVoice`
+flag per seat (exposed in snapshots), answers `voice_join` with a
+`voice_roster` of current voice members, notifies members with
+`voice_peer_joined` / `voice_peer_left` (also on disconnect and on room
+leave), and relays `voice_signal` (SDP offer/answer + ICE) only to a seat
+in the same room — cross-room delivery is impossible by construction and
+is covered by a test. Still a single dependency (`ws`); ICE uses public
+Google STUN servers only — no TURN, so peers behind very strict NATs may
+fail to connect audio (the game itself is unaffected).
+
+Client (`public/app.js`): "Join Voice" in the lobby and at the table;
+`getUserMedia({audio:true})` with a clear message on denial or on
+insecure contexts; mute/unmute and leave-voice; the newest joiner offers
+to existing members (one offerer per pair, no glare); per-player
+speaking indicator from an `AnalyserNode` level meter, shown on voice
+member chips, lobby seat rows and opponent chips; voice panel hidden in
+bot games; socket drops mid-voice re-announce on reconnect. Voice is
+fully optional — nothing in the game flow depends on it.
+
+Verification (2026-11-21):
+- `node test/voice-signal.js` — 7/7 checks pass: empty roster for the
+  first member, roster + peer-joined for the second, offer and answer
+  relayed intact within the room, cross-room signal NOT delivered,
+  voice-leave notification.
+- `node test/smoke.js` — still 12/12 after the change.
+Real two-browser audio was not exercised in this environment (no mic /
+no RTCPeerConnection in the test harness) — the signaling path and all
+game regressions are automated; the media path is standard WebRTC.

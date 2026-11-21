@@ -26,7 +26,7 @@ Wild color picker,screens,must,yes,yes,4-color modal; also used for a flipped Wi
 Challenge prompt,screens,must,yes,yes,Challenge button + pending banner with the total shown
 Game-over screen with points + play again,screens,must,yes,yes,Per-hand point breakdown; host starts next round
 Text chat in lobby,comms,should,yes,yes,Simple room chat; also usable at the table
-Voice chat,comms,could,yes,no,PENDING - out of scope for this build (was missing from v1 too)
+Voice chat,comms,could,yes,yes,"WebRTC peer-to-peer mesh (2-4 players); signaling relayed by the game WebSocket server strictly within the room; public STUN only (Google) - no TURN, so very strict NATs may fail to connect audio; Join Voice / mute / leave in lobby + at the table; speaking indicators via AnalyserNode; mic denial handled with a clear message; hidden in bot games; relay verified by test/voice-signal.js (7 checks)"
 Quick emotes / reactions,comms,could,yes,no,Not built; chat covers the need for now
 Profile / levels / XP,social,could,yes,no,SKIP for now - guest-only design; no accounts
 Daily rewards / spin wheel,economy,could,yes,no,SKIP - coin economy excluded; game is fully free

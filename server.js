@@ -47,7 +47,7 @@ const newToken = () => crypto.randomBytes(12).toString('hex');
 const newSeatId = () => 's' + (++seatSeq);
 
 function makeSeat(name, isBot) {
-  return { id: newSeatId(), token: newToken(), name: String(name || 'Player').slice(0, 20), isBot: !!isBot, ready: false, connected: true, team: null, ws: null };
+  return { id: newSeatId(), token: newToken(), name: String(name || 'Player').slice(0, 20), isBot: !!isBot, ready: false, connected: true, team: null, ws: null, inVoice: false };
 }
 
 function makeRoom(hostSeat, mode, rules) {
@@ -115,7 +115,7 @@ function snapshotFor(room, viewer) {
     room: { code: room.code, mode: room.mode, rules: room.rules, status: room.status, hostSeatId: room.hostSeatId, roundNo: room.roundNo },
     you: { seatId: viewer.id, token: viewer.token },
     seats: room.seats.map(s => ({
-      id: s.id, name: s.name, isBot: s.isBot, ready: s.ready, connected: s.connected,
+      id: s.id, name: s.name, isBot: s.isBot, ready: s.ready, connected: s.connected, inVoice: !!s.inVoice,
       team: s.team, score: room.scores[s.id] || 0,
       cardCount: g ? g.hands[s.id].length : 0,
       isCurrent: g ? G.currentSeatId(g) === s.id : false,
@@ -162,6 +162,25 @@ function broadcast(room) {
 
 function sendError(ws, message) {
   if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'error', message }));
+}
+
+// ---------------------------------------------------------------- voice chat
+// WebRTC mesh: the server never touches audio. It only tracks who is in
+// voice and relays SDP/ICE signaling between seats of the SAME room.
+function voiceMembers(room, except) {
+  return room.seats.filter(s => s.inVoice && !s.isBot && s !== except);
+}
+
+function sendToSeat(seat, obj) {
+  if (seat && seat.ws && seat.ws.readyState === 1) seat.ws.send(JSON.stringify(obj));
+}
+
+function leaveVoice(room, seat) {
+  if (!seat.inVoice) return;
+  seat.inVoice = false;
+  for (const s of room.seats) {
+    if (s.id !== seat.id) sendToSeat(s, { type: 'voice_peer_left', seatId: seat.id });
+  }
 }
 
 // ---------------------------------------------------------------- turn flow
@@ -268,6 +287,7 @@ wss.on('connection', (ws) => {
   ws.on('close', () => {
     const { room, seat } = ctx;
     if (!room || !seat) return;
+    leaveVoice(room, seat);
     seat.connected = false;
     seat.ws = null;
     if (room.status === 'waiting' && seat.id === room.hostSeatId) {
@@ -389,7 +409,30 @@ function handle(ws, ctx, msg, setCtx) {
       if (room.chat.length > 50) room.chat.shift();
       return broadcast(room);
     }
+    case 'voice_join': {
+      if (seat.isBot) return;
+      const wasInVoice = seat.inVoice;
+      seat.inVoice = true;
+      // The joiner initiates offers to everyone already in voice.
+      sendToSeat(seat, { type: 'voice_roster', peers: voiceMembers(room, seat).map(s => s.id) });
+      if (!wasInVoice) {
+        for (const s of voiceMembers(room, seat)) sendToSeat(s, { type: 'voice_peer_joined', seatId: seat.id });
+      }
+      return broadcast(room);
+    }
+    case 'voice_leave':
+      leaveVoice(room, seat);
+      return broadcast(room);
+    case 'voice_signal': {
+      // Relay only to a seat in the same room — never outside it.
+      const target = room.seats.find(s => s.id === msg.toSeatId);
+      if (target && target.id !== seat.id && !target.isBot) {
+        sendToSeat(target, { type: 'voice_signal', fromSeatId: seat.id, data: msg.data });
+      }
+      return;
+    }
     case 'leave': {
+      leaveVoice(room, seat);
       seat.connected = false; seat.ws = null;
       if (room.status === 'waiting') {
         room.seats = room.seats.filter(s => s.id !== seat.id);

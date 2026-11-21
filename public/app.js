@@ -16,13 +16,28 @@ let chatSeen = { lobby: 0, game: 0 };
 function connect(onOpen) {
   if (ws && ws.readyState <= 1) { if (onOpen) onOpen(); return; }
   ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
-  ws.onopen = () => { if (onOpen) onOpen(); };
+  ws.onopen = () => {
+    if (onOpen) onOpen();
+    if (voice.joined && voice.rejoinPending) { // socket dropped mid-voice: re-announce so peers re-offer
+      voice.rejoinPending = false;
+      setTimeout(() => { if (voice.joined) send({ type: 'voice_join' }); }, 600);
+    }
+  };
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.type === 'state') { snap = msg; onSnapshot(msg); }
     else if (msg.type === 'error') { showError(msg.message); }
+    else if (msg.type === 'voice_roster') onVoiceRoster(msg);
+    else if (msg.type === 'voice_peer_joined') closePeer(msg.seatId); // fresh offer is coming; drop any stale pc
+    else if (msg.type === 'voice_peer_left') closePeer(msg.seatId);
+    else if (msg.type === 'voice_signal') onVoiceSignal(msg);
   };
-  ws.onclose = () => { ws = null; toast('Connection lost — trying to reconnect…'); setTimeout(() => connect(tryRestore), 1500); };
+  ws.onclose = () => {
+    ws = null;
+    if (voice.joined) { voice.rejoinPending = true; [...voice.peers.keys()].forEach(closePeer); }
+    toast('Connection lost — trying to reconnect…');
+    setTimeout(() => connect(tryRestore), 1500);
+  };
 }
 function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
 
@@ -73,6 +88,7 @@ function onSnapshot(msg) {
   const status = msg.room.status;
   showView(status === 'waiting' ? 'lobby' : 'game');
   if (status === 'waiting') renderLobby(msg); else renderGame(msg);
+  renderVoice(msg);
   handleEvents(msg);
   renderChat('lobby', msg.chat);
   renderChat('game', msg.chat);
@@ -103,7 +119,7 @@ function renderLobby(msg) {
     ' · 30s turns · first to 500';
   const me = msg.seats.find(s => s.isYou);
   $('lobby-seats').innerHTML = msg.seats.map(s => `
-    <div class="seat-row">
+    <div class="seat-row" data-voice-mark="${s.id}">
       <div class="avatar">${esc(initials(s.name))}</div>
       <div class="grow"><b>${esc(s.name)}</b>${s.isYou ? ' (you)' : ''}${s.isBot ? ' 🤖' : ''}<br>
       <span class="muted">Score: ${s.score}</span></div>
@@ -124,6 +140,7 @@ $('btn-start').onclick = () => send({ type: 'start_game' });
 $('btn-leave-lobby').onclick = leaveRoom;
 $('btn-leave-game').onclick = leaveRoom;
 function leaveRoom() {
+  leaveVoice(false);
   send({ type: 'leave' });
   localStorage.removeItem('uno-adda-session');
   snap = null;
@@ -138,7 +155,7 @@ function renderGame(msg) {
 
   // opponents
   $('opponents').innerHTML = msg.seats.filter(s => !s.isYou).map(s => `
-    <div class="opp ${s.isCurrent ? 'current' : ''} ${s.connected ? '' : 'disc'}">
+    <div class="opp ${s.isCurrent ? 'current' : ''} ${s.connected ? '' : 'disc'}" data-voice-mark="${s.id}">
       <div class="avatar">${esc(initials(s.name))}</div>
       <div><b>${esc(s.name)}</b>${s.isBot ? ' 🤖' : ''}</div>
       <div class="muted">${s.cardCount} cards · ${s.score} pts${s.team ? ' · Team ' + s.team.toUpperCase() : ''}</div>
@@ -347,6 +364,196 @@ function startTimerBar(g) {
 // ------------------------------------------------------------ helpers
 function initials(name) { return (name || '?').trim().slice(0, 2).toUpperCase(); }
 function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
+// ------------------------------------------------------------ voice chat (WebRTC mesh)
+// Peer-to-peer audio; the server only relays signaling inside the room.
+// Optional — the game works fully without it. New joiners offer to the
+// members already in voice, so there is exactly one offerer per pair.
+const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }];
+const voice = {
+  joined: false, muted: false, rejoinPending: false,
+  stream: null, ctx: null,
+  peers: new Map(),  // seatId -> { pc, audio }
+  levels: new Map(), // seatId -> { analyser, data }
+  meterTimer: null,
+};
+
+function mySeatId() { return snap && snap.you ? snap.you.seatId : null; }
+
+function voiceNote(text) {
+  document.querySelectorAll('.voice-note').forEach(el => { el.textContent = text; });
+  if (text) toast(text);
+}
+
+async function joinVoice() {
+  if (voice.joined) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof RTCPeerConnection === 'undefined') {
+    return voiceNote('Voice chat needs a secure page (HTTPS or localhost) and a browser with microphone support.');
+  }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch {
+    return voiceNote('Microphone permission was denied — allow mic access in your browser settings, then tap Join Voice again.');
+  }
+  voice.stream = stream;
+  voice.joined = true;
+  voice.muted = false;
+  ensureAudioCtx();
+  if (mySeatId()) addAnalyser(mySeatId(), stream);
+  send({ type: 'voice_join' });
+  startMeter();
+  voiceNote('');
+  renderVoice(snap);
+}
+
+function leaveVoice(notify = true) {
+  if (!voice.joined) return;
+  voice.joined = false;
+  voice.rejoinPending = false;
+  [...voice.peers.keys()].forEach(closePeer);
+  if (voice.stream) { voice.stream.getTracks().forEach(t => t.stop()); voice.stream = null; }
+  voice.levels.clear();
+  if (voice.meterTimer) { clearInterval(voice.meterTimer); voice.meterTimer = null; }
+  if (notify) send({ type: 'voice_leave' });
+  renderVoice(snap);
+}
+
+function toggleMute() {
+  if (!voice.joined || !voice.stream) return;
+  voice.muted = !voice.muted;
+  voice.stream.getAudioTracks().forEach(t => { t.enabled = !voice.muted; });
+  renderVoice(snap);
+}
+
+function onVoiceRoster(msg) {
+  if (!voice.joined) return;
+  for (const seatId of msg.peers || []) peerFor(seatId, true);
+}
+
+async function onVoiceSignal(msg) {
+  if (!voice.joined || !msg.data) return;
+  const from = msg.fromSeatId;
+  const data = msg.data;
+  try {
+    if (data.kind === 'offer') {
+      const p = peerFor(from, false);
+      await p.pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+      const answer = await p.pc.createAnswer();
+      await p.pc.setLocalDescription(answer);
+      send({ type: 'voice_signal', toSeatId: from, data: { kind: 'answer', sdp: p.pc.localDescription } });
+    } else if (data.kind === 'answer') {
+      const p = voice.peers.get(from);
+      if (p) await p.pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+    } else if (data.kind === 'ice') {
+      const p = voice.peers.get(from);
+      if (p && data.candidate) await p.pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+    }
+  } catch { /* a failed negotiation just means that peer stays silent */ }
+}
+
+function peerFor(seatId, initiator) {
+  const existing = voice.peers.get(seatId);
+  if (existing) return existing;
+  const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  const p = { pc, audio: null };
+  voice.peers.set(seatId, p);
+  if (voice.stream) voice.stream.getTracks().forEach(t => pc.addTrack(t, voice.stream));
+  pc.onicecandidate = (ev) => {
+    if (ev.candidate) send({ type: 'voice_signal', toSeatId: seatId, data: { kind: 'ice', candidate: ev.candidate } });
+  };
+  pc.ontrack = (ev) => {
+    const audio = document.createElement('audio');
+    audio.autoplay = true;
+    audio.playsInline = true;
+    audio.srcObject = ev.streams[0];
+    $('voice-audios').appendChild(audio);
+    p.audio = audio;
+    addAnalyser(seatId, ev.streams[0]);
+  };
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'failed' || pc.connectionState === 'closed') closePeer(seatId);
+  };
+  if (initiator) {
+    pc.onnegotiationneeded = async () => {
+      try {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        send({ type: 'voice_signal', toSeatId: seatId, data: { kind: 'offer', sdp: pc.localDescription } });
+      } catch { /* peer will stay silent; game is unaffected */ }
+    };
+  }
+  return p;
+}
+
+function closePeer(seatId) {
+  const p = voice.peers.get(seatId);
+  if (!p) return;
+  voice.peers.delete(seatId);
+  voice.levels.delete(seatId);
+  try { p.pc.close(); } catch { /* already closed */ }
+  if (p.audio) p.audio.remove();
+}
+
+function ensureAudioCtx() {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  if (!voice.ctx) voice.ctx = new AC();
+  if (voice.ctx.state === 'suspended') voice.ctx.resume();
+}
+
+function addAnalyser(seatId, stream) {
+  if (!voice.ctx) return;
+  try {
+    const src = voice.ctx.createMediaStreamSource(stream);
+    const analyser = voice.ctx.createAnalyser();
+    analyser.fftSize = 256;
+    src.connect(analyser);
+    voice.levels.set(seatId, { analyser, data: new Uint8Array(analyser.frequencyBinCount) });
+  } catch { /* speaking indicator is best-effort */ }
+}
+
+function startMeter() {
+  if (voice.meterTimer) return;
+  voice.meterTimer = setInterval(() => {
+    voice.levels.forEach((L, seatId) => {
+      L.analyser.getByteFrequencyData(L.data);
+      let sum = 0;
+      for (let i = 0; i < L.data.length; i++) sum += L.data[i];
+      const speaking = sum / L.data.length > 12 && !(seatId === mySeatId() && voice.muted);
+      document.querySelectorAll('[data-voice-mark="' + seatId + '"]').forEach(el => el.classList.toggle('speaking', speaking));
+    });
+  }, 180);
+}
+
+function renderVoice(msg) {
+  // Voice only makes sense with another human in the room — bot games hide it.
+  const hasHumanPeer = !!(msg && msg.seats.some(s => !s.isYou && !s.isBot));
+  document.querySelectorAll('.voice-panel').forEach(panel => {
+    panel.classList.toggle('hidden', !hasHumanPeer);
+    if (!hasHumanPeer) return;
+    panel.querySelector('.voice-join').classList.toggle('hidden', voice.joined);
+    panel.querySelector('.voice-mute').classList.toggle('hidden', !voice.joined);
+    panel.querySelector('.voice-leave').classList.toggle('hidden', !voice.joined);
+    panel.querySelector('.voice-mute').textContent = voice.muted ? '🔊 Unmute' : '🔇 Mute';
+    const inVoice = msg.seats.filter(s => s.inVoice);
+    panel.querySelector('.voice-status').textContent = voice.joined
+      ? '— you are in voice'
+      : inVoice.length ? '— ' + inVoice.length + ' in voice' : '';
+    panel.querySelector('.voice-members').innerHTML = inVoice.length
+      ? inVoice.map(s => `<span class="voice-member" data-voice-mark="${s.id}">🎤 ${esc(s.name)}${s.isYou ? ' (you)' : ''}</span>`).join('')
+      : '<span class="muted">Nobody is in voice yet.</span>';
+  });
+  // Drop peer connections for seats that left the room entirely.
+  if (voice.joined && msg) {
+    const present = new Set(msg.seats.map(s => s.id));
+    [...voice.peers.keys()].forEach(seatId => { if (!present.has(seatId)) closePeer(seatId); });
+  }
+}
+
+document.querySelectorAll('.voice-join').forEach(b => { b.onclick = joinVoice; });
+document.querySelectorAll('.voice-mute').forEach(b => { b.onclick = toggleMute; });
+document.querySelectorAll('.voice-leave').forEach(b => { b.onclick = () => leaveVoice(true); });
 
 // boot: try to restore an in-progress room
 connect(tryRestore);
